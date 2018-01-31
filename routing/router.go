@@ -237,6 +237,9 @@ type ChannelRouter struct {
 	// consistency between the various database accesses.
 	channelEdgeMtx *multimutex.Mutex
 
+	rejectMtx   sync.RWMutex
+	rejectCache map[uint64]struct{}
+
 	sync.RWMutex
 
 	quit chan struct{}
@@ -268,6 +271,7 @@ func New(cfg Config) (*ChannelRouter, error) {
 		channelEdgeMtx:    multimutex.NewMutex(),
 		selfNode:          selfNode,
 		routeCache:        make(map[routeTuple][]*Route),
+		rejectCache:       make(map[uint64]struct{}),
 		quit:              make(chan struct{}),
 	}, nil
 }
@@ -566,9 +570,10 @@ func (r *ChannelRouter) pruneZombieChans() error {
 	}
 
 	r.rejectMtx.Lock()
+	defer r.rejectMtx.Unlock()
+
 	err := r.cfg.Graph.ForEachChannel(filterPruneChans)
 	if err != nil {
-		r.rejectMtx.Unlock()
 		return fmt.Errorf("Unable to filter local zombie "+
 			"chans: %v", err)
 	}
@@ -582,12 +587,10 @@ func (r *ChannelRouter) pruneZombieChans() error {
 
 		err := r.cfg.Graph.DeleteChannelEdge(&chanToPrune)
 		if err != nil {
-			r.rejectMtx.Unlock()
 			return fmt.Errorf("Unable to prune zombie "+
 				"chans: %v", err)
 		}
 	}
-	r.rejectMtx.Unlock()
 
 	return nil
 }
@@ -607,12 +610,6 @@ func (r *ChannelRouter) networkHandler() {
 	// We'll use this validation barrier to ensure that we process all jobs
 	// in the proper order during parallel validation.
 	validationBarrier := NewValidationBarrier(runtime.NumCPU()*4, r.quit)
-
-	// Before we accept any new messages/requests, we'll prune away any
-	// stale entires within zombie entries within our network view.
-	if err := r.pruneZombieChans(); err != nil {
-		log.Errorf("unable to prune zombies: %v", err)
-	}
 
 	for {
 		select {
@@ -867,6 +864,16 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 		log.Infof("Updated vertex data for node=%x", msg.PubKeyBytes)
 
 	case *channeldb.ChannelEdgeInfo:
+		// If we recently rejected this channel edge, then we won't
+		// attempt to re-process it.
+		r.rejectMtx.RLock()
+		if _, ok := r.rejectCache[msg.ChannelID]; ok {
+			r.rejectMtx.RUnlock()
+			return newErrf(ErrIgnored, "recently rejected "+
+				"chan_id=%v", msg.ChannelID)
+		}
+		r.rejectMtx.RUnlock()
+
 		// Prior to processing the announcement we first check if we
 		// already know of this channel, if so, then we can exit early.
 		_, _, exists, err := r.cfg.Graph.HasChannelEdge(msg.ChannelID)
@@ -978,6 +985,16 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 		}
 
 	case *channeldb.ChannelEdgePolicy:
+		// If we recently rejected this channel edge, then we won't
+		// attempt to re-process it.
+		r.rejectMtx.RLock()
+		if _, ok := r.rejectCache[msg.ChannelID]; ok {
+			r.rejectMtx.RUnlock()
+			return newErrf(ErrIgnored, "recently rejected "+
+				"chan_id=%v", msg.ChannelID)
+		}
+		r.rejectMtx.RUnlock()
+
 		channelID := lnwire.NewShortChanIDFromInt(msg.ChannelID)
 
 		// We make sure to hold the mutex for this channel ID,
