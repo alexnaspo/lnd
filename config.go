@@ -203,6 +203,7 @@ type config struct {
 // 	3) Load configuration file overwriting defaults with any specified options
 // 	4) Parse CLI options and overwrite/add any specified options
 func loadConfig() (*config, error) {
+    fmt.Println("alex custom println")
 	defaultCfg := config{
 		ConfigFile:   defaultConfigFile,
 		DataDir:      defaultDataDir,
