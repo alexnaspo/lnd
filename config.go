@@ -724,6 +724,7 @@ func parseRPCParams(cConfig *chainConfig, nodeConfig interface{}, net chainCode,
 	// the RPC credentials from the configuration. So if lnd wasn't
 	// specified the parameters, then we won't be able to start.
 	if cConfig.SimNet {
+        fmt.Println("alex - cConfig", cConfig)
 		str := "%v: rpcuser and rpcpass must be set to your btcd " +
 			"node's RPC parameters for simnet mode"
 		return fmt.Errorf(str, funcName)
